@@ -229,6 +229,10 @@ export type ChannelIngressQueue<TPayload, TMetadata = unknown, TCompletedMetadat
     id: string,
     options?: { resubmittedAt?: number },
   ): Promise<ChannelIngressQueueResubmitResult<TPayload, TMetadata, TCompletedMetadata>>;
+  /** Remove one failed event, preserving active and completed queue rows. */
+  deleteFailed?(id: string): Promise<boolean>;
+  /** Remove all failed events for this queue and return the affected count. */
+  purgeFailed?(ids?: Iterable<string>): Promise<number>;
   delete(
     idOrClaim:
       | string
@@ -1449,6 +1453,49 @@ export function createChannelIngressQueue<
     );
   };
 
+  const deleteFailed: NonNullable<
+    ChannelIngressQueue<TPayload, TMetadata, TCompletedMetadata>["deleteFailed"]
+  > = async (id) => {
+    const database = openChannelIngressDatabase(options.stateDir);
+    return runOpenClawStateWriteTransaction(
+      (tx) => {
+        const result = executeSqliteQuerySync(
+          tx.db,
+          getChannelIngressKysely(tx.db)
+            .deleteFrom("channel_ingress_events")
+            .where("queue_name", "=", queueName)
+            .where("event_id", "=", idFrom(id))
+            .where("status", "=", "failed"),
+        );
+        return affectedRows(result) > 0;
+      },
+      { path: database.path },
+    );
+  };
+
+  const purgeFailed: NonNullable<
+    ChannelIngressQueue<TPayload, TMetadata, TCompletedMetadata>["purgeFailed"]
+  > = async (ids) => {
+    const database = openChannelIngressDatabase(options.stateDir);
+    return runOpenClawStateWriteTransaction(
+      (tx) => {
+        const selectedIds = ids ? [...ids].map(idFrom) : null;
+        if (selectedIds?.length === 0) {
+          return 0;
+        }
+        let query = getChannelIngressKysely(tx.db)
+          .deleteFrom("channel_ingress_events")
+          .where("queue_name", "=", queueName)
+          .where("status", "=", "failed");
+        if (selectedIds) {
+          query = query.where("event_id", "in", selectedIds);
+        }
+        return affectedRows(executeSqliteQuerySync(tx.db, query));
+      },
+      { path: database.path },
+    );
+  };
+
   const prune: ChannelIngressQueue<TPayload, TMetadata, TCompletedMetadata>["prune"] = async (
     pruneOptions,
   ) => {
@@ -1570,6 +1617,8 @@ export function createChannelIngressQueue<
     release,
     fail,
     resubmit,
+    deleteFailed,
+    purgeFailed,
     delete: deleteEntry,
     recoverStaleClaims,
     prune,
