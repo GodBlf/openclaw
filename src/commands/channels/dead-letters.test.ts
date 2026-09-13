@@ -2,10 +2,10 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { createChannelIngressQueue } from "../../channels/message/ingress-queue.js";
-import type { RuntimeEnv } from "../../runtime.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import { createTestRuntime } from "../test-runtime-config-helpers.js";
 import {
   channelsDeadLettersListCommand,
   channelsDeadLettersDeleteCommand,
@@ -24,14 +24,6 @@ async function withTempState(run: (stateDir: string) => Promise<void>): Promise<
     closeOpenClawStateDatabaseForTest();
     await fs.rm(stateDir, { recursive: true, force: true });
   }
-}
-
-function createRuntime() {
-  return {
-    log: vi.fn(),
-    error: vi.fn(),
-    exit: vi.fn(),
-  } as unknown as RuntimeEnv;
 }
 
 describe("channel dead-letter commands", () => {
@@ -56,14 +48,14 @@ describe("channel dead-letter commands", () => {
         throw new Error("Expected a claimed ingress event");
       }
       await queue.fail(claim, { reason: "handler-error", failedAt: 20 });
-      const runtime = createRuntime();
+      const runtime = createTestRuntime();
 
       await channelsDeadLettersListCommand(
         { channel: "telegram", account: "ops", json: true },
         runtime,
       );
 
-      const output = JSON.parse(String(vi.mocked(runtime.log).mock.calls[0]?.[0])) as {
+      const output = JSON.parse(String(runtime.log.mock.calls[0]?.[0])) as {
         deadLetters: Array<{ id: string; payload?: unknown; reason: string }>;
       };
       expect(output.deadLetters).toEqual([
@@ -85,7 +77,7 @@ describe("channel dead-letter commands", () => {
         throw new Error("Expected a claimed ingress event");
       }
       await queue.fail(claim, { reason: "handler-error", failedAt: 20 });
-      const runtime = createRuntime();
+      const runtime = createTestRuntime();
 
       await channelsDeadLettersResubmitCommand("event-1", { channel: "line" }, runtime);
       const replay = await queue.claimNext({ ownerId: "replay-worker" });
@@ -111,7 +103,7 @@ describe("channel dead-letter commands", () => {
     ]),
   )("rejects a $label --account at the $command boundary", async ({ account, command }) => {
     await withTempState(async () => {
-      const runtime = createRuntime();
+      const runtime = createTestRuntime();
       const action =
         command === "list"
           ? channelsDeadLettersListCommand({ channel: "telegram", account, json: true }, runtime)
@@ -135,11 +127,11 @@ describe("channel dead-letter commands", () => {
         throw new Error("Expected a claimed ingress event");
       }
       await queue.fail(claim, { reason: "handler-error", failedAt: 20 });
-      const runtime = createRuntime();
+      const runtime = createTestRuntime();
 
       await channelsDeadLettersListCommand({ channel: "telegram", json: true }, runtime);
 
-      const output = JSON.parse(String(vi.mocked(runtime.log).mock.calls[0]?.[0])) as {
+      const output = JSON.parse(String(runtime.log.mock.calls[0]?.[0])) as {
         accountId: string;
         deadLetters: Array<{ id: string }>;
       };
