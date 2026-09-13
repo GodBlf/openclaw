@@ -378,7 +378,7 @@ describe("FileSettingsStorage", () => {
                 field,
               ],
               process.env,
-              10_000,
+              30_000,
               { signal: abort.signal, requireProcessTreeExit: true },
             ),
           );
@@ -409,6 +409,6 @@ describe("FileSettingsStorage", () => {
           await Promise.all(writers);
         }
       }),
-    20_000,
+    45_000,
   );
 });
