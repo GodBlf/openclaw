@@ -152,7 +152,7 @@ describe("channel dead-letter commands", () => {
         throw new Error("Expected claim");
       }
       await queue.fail(claim, { reason: "bad", failedAt: 20 });
-      const runtime = createRuntime();
+      const runtime = createTestRuntime();
       await channelsDeadLettersDeleteCommand(
         "event-1",
         { channel: "telegram", account: "ops", force: true },
@@ -179,7 +179,7 @@ describe("channel dead-letter commands", () => {
         }
         await queue.fail(claim, { reason: "bad", failedAt: 20 });
       }
-      const runtime = createRuntime();
+      const runtime = createTestRuntime();
       await channelsDeadLettersPurgeCommand(
         { channel: "telegram", account: "ops", force: true },
         runtime,
