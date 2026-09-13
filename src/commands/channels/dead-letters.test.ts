@@ -156,7 +156,9 @@ describe("channel dead-letter commands", () => {
       });
       await queue.enqueue("event-1", { text: "discard" });
       const claim = await queue.claim("event-1", { ownerId: "worker" });
-      if (!claim) throw new Error("Expected claim");
+      if (!claim) {
+        throw new Error("Expected claim");
+      }
       await queue.fail(claim, { reason: "bad", failedAt: 20 });
       const runtime = createRuntime();
       await channelsDeadLettersDeleteCommand(
@@ -180,7 +182,9 @@ describe("channel dead-letter commands", () => {
       for (const id of ["event-1", "event-2"]) {
         await queue.enqueue(id, { text: id });
         const claim = await queue.claim(id, { ownerId: "worker" });
-        if (!claim) throw new Error("Expected claim");
+        if (!claim) {
+          throw new Error("Expected claim");
+        }
         await queue.fail(claim, { reason: "bad", failedAt: 20 });
       }
       const runtime = createRuntime();

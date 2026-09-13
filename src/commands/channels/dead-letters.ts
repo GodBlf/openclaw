@@ -2,7 +2,10 @@ import { parseStrictPositiveInteger } from "@openclaw/normalization-core/number-
 // Operator commands for inspecting and resubmitting failed channel ingress events.
 import { sanitizeTerminalText } from "../../../packages/terminal-core/src/safe-text.js";
 import { theme } from "../../../packages/terminal-core/src/theme.js";
-import { createChannelIngressQueue } from "../../channels/message/ingress-queue.js";
+import {
+  createChannelIngressQueue,
+  deleteChannelIngressFailedEvents,
+} from "../../channels/message/ingress-queue.js";
 import { formatDurationHuman } from "../../infra/format-time/format-duration.js";
 import { defaultRuntime, type RuntimeEnv, writeRuntimeJson } from "../../runtime.js";
 import { createClackPrompter } from "../../wizard/clack-prompter.js";
@@ -32,12 +35,16 @@ async function confirmDestructiveAction(
   message: string,
   force: boolean | undefined,
 ): Promise<void> {
-  if (force) return;
+  if (force) {
+    return;
+  }
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     throw new Error("Dead-letter deletion requires an interactive TTY or --force.");
   }
   const ok = await createClackPrompter().confirm({ message, initialValue: false });
-  if (!ok) throw new Error("Deletion cancelled.");
+  if (!ok) {
+    throw new Error("Deletion cancelled.");
+  }
 }
 
 function parseLimit(value: unknown): number {
@@ -118,19 +125,29 @@ export async function channelsDeadLettersDeleteCommand(
   runtime: RuntimeEnv = defaultRuntime,
 ): Promise<void> {
   const { channelId, accountId } = resolveScope(options);
+  const queue = createChannelIngressQueue({ channelId, accountId });
+  if (!queue.listFailed) {
+    throw new Error("This runtime does not support dead-letter deletion.");
+  }
+  const entry = (await queue.listFailed({ limit: "all" })).find((item) => item.id === eventId);
+  if (!entry) {
+    throw new Error(`Ingress event ${eventId} was not found as a failed event.`);
+  }
   await confirmDestructiveAction(
     `Delete failed ingress event ${eventId} from ${channelId}/${accountId}? This removes its duplicate barrier.`,
     options.force,
   );
-  const queue = createChannelIngressQueue({ channelId, accountId });
-  if (!queue.deleteFailed) throw new Error("This runtime does not support dead-letter deletion.");
-  const deleted = await queue.deleteFailed(eventId);
-  if (!deleted) throw new Error(`Ingress event ${eventId} was not found as a failed event.`);
-  if (options.json) writeRuntimeJson(runtime, { channelId, accountId, eventId, deleted: true });
-  else
+  const deleted = await deleteChannelIngressFailedEvents({ channelId, accountId }, [entry]);
+  if (deleted === 0) {
+    throw new Error(`Ingress event ${eventId} changed after confirmation and was not deleted.`);
+  }
+  if (options.json) {
+    writeRuntimeJson(runtime, { channelId, accountId, eventId, deleted: true });
+  } else {
     runtime.log(
       `${theme.success("Deleted")} failed channel ingress event ${sanitizeTerminalText(eventId)} (${channelId}/${accountId}). Replaying this id is now allowed.`,
     );
+  }
 }
 
 /** Delete all currently failed ingress events for one channel account. */
@@ -140,17 +157,20 @@ export async function channelsDeadLettersPurgeCommand(
 ): Promise<void> {
   const { channelId, accountId } = resolveScope(options);
   const queue = createChannelIngressQueue({ channelId, accountId });
-  if (!queue.listFailed || !queue.purgeFailed)
+  if (!queue.listFailed) {
     throw new Error("This runtime does not support dead-letter deletion.");
+  }
   const entries = await queue.listFailed({ limit: "all" });
   await confirmDestructiveAction(
     `Delete ${entries.length} failed ingress event(s) from ${channelId}/${accountId}? This removes duplicate barriers.`,
     options.force,
   );
-  const deleted = await queue.purgeFailed(entries.map((entry) => entry.id));
-  if (options.json) writeRuntimeJson(runtime, { channelId, accountId, deleted });
-  else
+  const deleted = await deleteChannelIngressFailedEvents({ channelId, accountId }, entries);
+  if (options.json) {
+    writeRuntimeJson(runtime, { channelId, accountId, deleted });
+  } else {
     runtime.log(
       `${theme.success("Deleted")} ${deleted} failed channel ingress event(s) (${channelId}/${accountId}). Replaying these ids is now allowed.`,
     );
+  }
 }
