@@ -23,6 +23,8 @@ import type { BrokerExecaOptions, BrokerExecaResult } from "./execa-protocol.js"
 import { createBrokerReceiver, createBrokerSender } from "./ipc.js";
 import { holdPipe, restoreStdinPipe } from "./pipe.js";
 import {
+  MAX_NATIVE_RESOURCES,
+  MAX_PENDING_SPAWNS,
   SpawnBrokerError,
   type BrokerRequest,
   type BrokerResponse,
@@ -44,7 +46,6 @@ import {
 
 export type { BrokerNativeResourceLease } from "./resource-host.js";
 
-const MAX_REQUESTS = 256;
 const RESTART_DELAYS = [100, 250, 500, 1000, 2000];
 const UNIX_SOCKET_PATH_BYTES = 103;
 const MAX_BOOTSTRAP_BYTES = 1024;
@@ -122,6 +123,7 @@ export class SpawnBrokerHost {
   private consecutiveFailures = 0;
   private sequence = 0;
   private requests = new Map<number, Request>();
+  private readonly pendingSpawns = new Set<number>();
   private readonly cleanups = new Set<ReturnType<typeof terminateLostBrokerChild>>();
   private readonly cleanupErrors: Error[] = [];
   private readonly resourceClaims: BrokerResourceClaims | undefined;
@@ -206,7 +208,7 @@ export class SpawnBrokerHost {
       !this.resourceClaims ||
       !this.resourceAuthority ||
       this.closing ||
-      this.requests.size + this.resourceClaims.size >= MAX_REQUESTS
+      this.resourceClaims.size >= MAX_NATIVE_RESOURCES
     ) {
       throw new SpawnBrokerError("Native resource broker is unavailable or at capacity");
     }
@@ -313,22 +315,28 @@ export class SpawnBrokerHost {
       result?.reject(error);
       child.fail(error);
     };
-    if (
-      !this.available ||
-      this.closing ||
-      this.requests.size + (this.resourceClaims?.size ?? 0) >= MAX_REQUESTS
-    ) {
+    if (!this.available || this.closing || this.pendingSpawns.size >= MAX_PENDING_SPAWNS) {
       child.markNotStarted();
-      queueMicrotask(() => fail(new SpawnBrokerError("Spawn broker is unavailable")));
+      queueMicrotask(() =>
+        fail(
+          new SpawnBrokerError(
+            this.available && !this.closing
+              ? "Spawn broker startup capacity exceeded"
+              : "Spawn broker is unavailable",
+          ),
+        ),
+      );
       return request;
     }
     this.requests.set(message.id, request);
+    this.pendingSpawns.add(message.id);
     this.refreshNativeReference();
     void child.waitForClose().then(() => {
       request.childClosed = true;
       this.retire(message.id, request);
     });
     void this.transmit(message).catch((error: unknown) => {
+      this.pendingSpawns.delete(message.id);
       if (!request.nativeInitiated) {
         if (message.type === "prepare-spawn") {
           child.markNotStarted();
@@ -444,6 +452,7 @@ export class SpawnBrokerHost {
         request.child.fail(error);
       }
       this.requests.clear();
+      this.pendingSpawns.clear();
       this.refreshNativeReference();
       if (child.pid && process.platform !== "win32") {
         // Individual detached-tree escalation is armed before the broker group can die.
@@ -527,6 +536,9 @@ export class SpawnBrokerHost {
       ) {
         this.resourceClaims?.receive(message);
         return;
+      }
+      if (message.type === "spawned" || message.type === "error") {
+        this.pendingSpawns.delete(message.id);
       }
       const request = this.requests.get(message.id);
       if (!request) {

@@ -12,6 +12,8 @@ import { startBrokerExeca, type BrokerExecaProcess } from "./execa-worker.js";
 import { createBrokerReceiver } from "./ipc.js";
 import { holdPipeForTransfer, takePipePrefix } from "./pipe.js";
 import {
+  MAX_NATIVE_RESOURCES,
+  MAX_PENDING_SPAWNS,
   serializeBrokerError,
   SpawnBrokerError,
   type BrokerRequest,
@@ -137,7 +139,7 @@ function disposeFailedChild(child: ChildProcess | undefined): void {
 async function launch(
   message: Extract<BrokerRequest, { type: "spawn" | "prepare-spawn" | "spawn-execa" }>,
 ): Promise<void> {
-  if (stopping || owned.size + starting.size + (resources?.size ?? 0) >= 256) {
+  if (stopping || starting.size >= MAX_PENDING_SPAWNS) {
     const error = new SpawnBrokerError("Spawn broker request capacity exceeded");
     // The ordered failed-admission result proves no native work was started.
     // No command metadata exists because this guard precedes spawn preparation.
@@ -537,7 +539,7 @@ async function initialize(raw: unknown): Promise<void> {
       secret: authority.secret,
       generation: authority.generation,
       reportParent: report,
-      canAdmit: () => !stopping && owned.size + starting.size + (resources?.size ?? 0) < 256,
+      canAdmit: () => !stopping && (resources?.size ?? 0) < MAX_NATIVE_RESOURCES,
     });
     if (stopping) {
       resources.disconnect();
