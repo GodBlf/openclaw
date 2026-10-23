@@ -1,13 +1,9 @@
-import { parseStrictPositiveInteger } from "@openclaw/normalization-core/number-coercion";
-// Operator commands for inspecting and resubmitting failed channel ingress events.
 import { sanitizeTerminalText } from "../../../packages/terminal-core/src/safe-text.js";
 import { theme } from "../../../packages/terminal-core/src/theme.js";
-import {
-  createChannelIngressQueue,
-  deleteChannelIngressFailedEvents,
-} from "../../channels/message/ingress-queue.js";
+import { createChannelIngressQueue } from "../../channels/message/ingress-queue.js";
+import { parseLogsPositiveInt } from "../../cli/logs-cli.options.js";
 import { formatDurationHuman } from "../../infra/format-time/format-duration.js";
-import { defaultRuntime, type RuntimeEnv, writeRuntimeJson } from "../../runtime.js";
+import { defaultRuntime } from "../../runtime.js";
 import { createClackPrompter } from "../../wizard/clack-prompter.js";
 
 type ChannelsDeadLettersOptions = {
@@ -47,38 +43,31 @@ async function confirmDestructiveAction(
   }
 }
 
-function parseLimit(value: unknown): number {
-  const parsed = parseStrictPositiveInteger(value ?? "100");
-  if (parsed === undefined) {
-    throw new Error("--limit must be a positive integer.");
-  }
-  return parsed;
-}
-
 /** List retained ingress failures for one channel account. */
 export async function channelsDeadLettersListCommand(
   options: ChannelsDeadLettersOptions,
-  runtime: RuntimeEnv = defaultRuntime,
 ): Promise<void> {
   const { channelId, accountId } = resolveScope(options);
   const queue = createChannelIngressQueue({ channelId, accountId });
   if (!queue.listFailed) {
     throw new Error("This runtime does not support channel ingress dead-letter inspection.");
   }
-  const deadLetters = await queue.listFailed({ limit: parseLimit(options.limit) });
+  const deadLetters = await queue.listFailed({
+    limit: parseLogsPositiveInt(options.limit, 100, "--limit"),
+  });
   if (options.json) {
-    writeRuntimeJson(runtime, { channelId, accountId, deadLetters });
+    defaultRuntime.writeJson({ channelId, accountId, deadLetters });
     return;
   }
-  runtime.log(theme.heading(`Channel ingress dead letters (${channelId}/${accountId})`));
+  defaultRuntime.log(theme.heading(`Channel ingress dead letters (${channelId}/${accountId})`));
   if (deadLetters.length === 0) {
-    runtime.log(theme.muted("No dead-lettered ingress events."));
+    defaultRuntime.log(theme.muted("No dead-lettered ingress events."));
     return;
   }
   const now = Date.now();
   for (const entry of deadLetters) {
     const age = formatDurationHuman(Math.max(0, now - entry.failedAt));
-    runtime.log(
+    defaultRuntime.log(
       `- ${sanitizeTerminalText(entry.id)}: ${sanitizeTerminalText(entry.reason)}; attempts=${entry.attempts}; failed ${age} ago`,
     );
   }
@@ -88,7 +77,6 @@ export async function channelsDeadLettersListCommand(
 export async function channelsDeadLettersResubmitCommand(
   eventId: string,
   options: ChannelsDeadLettersOptions,
-  runtime: RuntimeEnv = defaultRuntime,
 ): Promise<void> {
   const { channelId, accountId } = resolveScope(options);
   const queue = createChannelIngressQueue({ channelId, accountId });
@@ -98,9 +86,9 @@ export async function channelsDeadLettersResubmitCommand(
   const result = await queue.resubmit(eventId);
   if (result.kind === "resubmitted") {
     if (options.json) {
-      writeRuntimeJson(runtime, { channelId, accountId, eventId, result });
+      defaultRuntime.writeJson({ channelId, accountId, eventId, result });
     } else {
-      runtime.log(
+      defaultRuntime.log(
         `${theme.success("Resubmitted")} channel ingress event ${sanitizeTerminalText(eventId)} (${channelId}/${accountId}).`,
       );
     }
@@ -122,7 +110,6 @@ export async function channelsDeadLettersResubmitCommand(
 export async function channelsDeadLettersDeleteCommand(
   eventId: string,
   options: ChannelsDeadLettersOptions,
-  runtime: RuntimeEnv = defaultRuntime,
 ): Promise<void> {
   const { channelId, accountId } = resolveScope(options);
   const queue = createChannelIngressQueue({ channelId, accountId });
@@ -137,14 +124,14 @@ export async function channelsDeadLettersDeleteCommand(
     `Delete failed ingress event ${eventId} from ${channelId}/${accountId}? This removes its duplicate barrier.`,
     options.force,
   );
-  const deleted = await deleteChannelIngressFailedEvents({ channelId, accountId }, [entry]);
+  const deleted = await queue.deleteFailed([entry]);
   if (deleted === 0) {
     throw new Error(`Ingress event ${eventId} changed after confirmation and was not deleted.`);
   }
   if (options.json) {
-    writeRuntimeJson(runtime, { channelId, accountId, eventId, deleted: true });
+    defaultRuntime.writeJson({ channelId, accountId, eventId, deleted: true });
   } else {
-    runtime.log(
+    defaultRuntime.log(
       `${theme.success("Deleted")} failed channel ingress event ${sanitizeTerminalText(eventId)} (${channelId}/${accountId}). Replaying this id is now allowed.`,
     );
   }
@@ -153,7 +140,6 @@ export async function channelsDeadLettersDeleteCommand(
 /** Delete all currently failed ingress events for one channel account. */
 export async function channelsDeadLettersPurgeCommand(
   options: ChannelsDeadLettersOptions,
-  runtime: RuntimeEnv = defaultRuntime,
 ): Promise<void> {
   const { channelId, accountId } = resolveScope(options);
   const queue = createChannelIngressQueue({ channelId, accountId });
@@ -165,11 +151,11 @@ export async function channelsDeadLettersPurgeCommand(
     `Delete ${entries.length} failed ingress event(s) from ${channelId}/${accountId}? This removes duplicate barriers.`,
     options.force,
   );
-  const deleted = await deleteChannelIngressFailedEvents({ channelId, accountId }, entries);
+  const deleted = await queue.deleteFailed(entries);
   if (options.json) {
-    writeRuntimeJson(runtime, { channelId, accountId, deleted });
+    defaultRuntime.writeJson({ channelId, accountId, deleted });
   } else {
-    runtime.log(
+    defaultRuntime.log(
       `${theme.success("Deleted")} ${deleted} failed channel ingress event(s) (${channelId}/${accountId}). Replaying these ids is now allowed.`,
     );
   }

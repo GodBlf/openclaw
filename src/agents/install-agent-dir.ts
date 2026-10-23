@@ -4,10 +4,8 @@ import path from "node:path";
 import { cloneEnvWithPlatformSemantics } from "../config/config-env-vars.js";
 import type { OpenClawConfig } from "../config/types.js";
 import { isMissingPathError } from "../infra/errno.js";
-import {
-  hasCompletedLegacyAgentDirMigration,
-  resolveLegacyStandaloneAgentDir,
-} from "../infra/state-migrations.agent-dir-receipt.js";
+import { hasCompletedLegacyAgentDirMigration } from "../infra/state-migrations.agent-dir-receipt.js";
+import { resolveLegacyProfileMigrationExceptions } from "../infra/state-migrations.profile-scope.js";
 import { isUpdateRehearsalReadOnlyPath } from "../infra/update-rehearsal-paths.js";
 import { LEGACY_IMPLICIT_AGENT_ID } from "../routing/session-key.js";
 import { inspectOpenClawAgentDatabaseOwner } from "../state/openclaw-agent-db-lifecycle.js";
@@ -15,6 +13,7 @@ import {
   listAgentIds,
   resolveEffectiveAgentDir,
   tryResolveAmbientOwnerAgentId,
+  tryResolveLegacyDataOwnerAgentId,
 } from "./agent-scope-config.js";
 
 type InstallAgentDirectory = {
@@ -46,13 +45,13 @@ export function resolveInstallAgentDir(
     const owner = tryResolveAmbientOwnerAgentId(config);
     return owner && listAgentIds(config).includes(owner) ? owner : undefined;
   };
-  const targetDir = () => {
+  const targetDir = (selectedOwner?: string) => {
     const explicit = overrideDir();
     if (explicit !== undefined) {
       return explicit;
     }
     const { config, env } = read();
-    const owner = agentId();
+    const owner = selectedOwner ?? agentId();
     return (
       overrideDir() ||
       (owner ? resolveEffectiveAgentDir(config, owner, { env, homedir }) : undefined)
@@ -93,9 +92,14 @@ export function resolveInstallAgentDir(
     if (explicit !== undefined) {
       return select(explicit, "explicit");
     }
-    const legacyDir = resolveLegacyStandaloneAgentDir(homedir);
+    const { standaloneAgent: legacyDir } = resolveLegacyProfileMigrationExceptions({
+      env: read().env,
+      homedir,
+      configuredAgentDir: target,
+    });
     try {
       if (
+        legacyDir &&
         !isUpdateRehearsalReadOnlyPath(legacyDir, read().env) &&
         fs.readdirSync(legacyDir).length > 0 &&
         (!target || !hasCompletedLegacyAgentDirMigration(legacyDir, target))
@@ -117,8 +121,13 @@ export function resolveInstallAgentDir(
       return read().env;
     },
     get migrationTarget() {
-      const dir = targetDir();
-      return dir === undefined ? undefined : { dir, owner: agentId() };
+      const { config } = read();
+      // Retained provenance can target migration without selecting a runtime directory.
+      const candidate =
+        tryResolveAmbientOwnerAgentId(config) ?? tryResolveLegacyDataOwnerAgentId(config);
+      const owner = candidate && listAgentIds(config).includes(candidate) ? candidate : undefined;
+      const dir = targetDir(owner);
+      return dir === undefined ? undefined : { dir, owner };
     },
     get optionalDirectory() {
       return (directory ??= resolveDirectory());
